@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.zip
+index.json
+doc_map.json
+analytics.json
