@@ -38,8 +38,13 @@ def walk_json_files(dataset_path: Path) -> Iterable[Path]:
 
 def tokenize(text: str) -> List[str]:
     """Tokenize text into lowercase alphanumeric Porter-stemmed tokens."""
-    tokens = TOKEN_RE.findall(text or "")
-    return [stemmer.stem(token.lower()) for token in tokens]
+    stemmed_tokens = []
+    for token in TOKEN_RE.findall(text or ""):
+        token = token.lower()
+        if token.isdigit():
+            continue
+        stemmed_tokens.append(stemmer.stem(token))
+    return stemmed_tokens
 
 
 def extract_important_text(soup: BeautifulSoup) -> str:
@@ -83,11 +88,14 @@ def process_document(json_path: Path) -> Tuple[str, Counter, Counter]:
     return clean_url, term_counts, important_term_counts
 
 
-def save_json(data, output_path: Path) -> None:
-    """Save data as readable JSON, creating parent directories if needed."""
+def save_json(data, output_path: Path, pretty: bool = False) -> None:
+    """Save data as JSON, creating parent directories if needed."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2, sort_keys=True)
+        if pretty:
+            json.dump(data, file, indent=2, sort_keys=True)
+        else:
+            json.dump(data, file, separators=(",", ":"), sort_keys=True)
 
 
 def get_file_size_kb(path: Path) -> float:
@@ -97,7 +105,7 @@ def get_file_size_kb(path: Path) -> float:
 
 def build_index(
     dataset_path: Path, progress_interval: int = 1000
-) -> Tuple[Dict[str, List[dict]], Dict[int, str], int]:
+) -> Tuple[Dict[str, List[list]], Dict[int, str], int]:
     """
     Build an in-memory inverted index.
 
@@ -122,21 +130,13 @@ def build_index(
         doc_map[doc_id] = url
 
         for token, tf in term_counts.items():
-            index[token][doc_id] = {
-                "doc_id": doc_id,
-                "tf": tf,
-                "important_tf": important_term_counts.get(token, 0),
-            }
+            index[token][doc_id] = [doc_id, tf, important_term_counts.get(token, 0)]
 
         # Keep important-only tokens discoverable even if BeautifulSoup's visible
         # text extraction changes for unusual malformed pages.
         for token, important_tf in important_term_counts.items():
             if token not in term_counts:
-                index[token][doc_id] = {
-                    "doc_id": doc_id,
-                    "tf": 0,
-                    "important_tf": important_tf,
-                }
+                index[token][doc_id] = [doc_id, 0, important_tf]
 
         if indexed_documents % progress_interval == 0:
             print(
@@ -145,7 +145,7 @@ def build_index(
             )
 
     serializable_index = {
-        token: sorted(postings.values(), key=lambda posting: posting["doc_id"])
+        token: sorted(postings.values(), key=lambda posting: posting[0])
         for token, postings in sorted(index.items())
     }
 
@@ -223,7 +223,7 @@ def main() -> None:
         }
 
         print("Writing analytics.json...")
-        save_json(analytics, analytics_path)
+        save_json(analytics, analytics_path, pretty=True)
         print_analytics(analytics)
     finally:
         if temp_dir is not None:
