@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CS 121 Search Engine - Milestone 3 Report</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Arial, Helvetica, sans-serif;
+      color: #202124;
+      background: #ffffff;
+    }
+
+    body {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 36px 24px 60px;
+      line-height: 1.55;
+    }
+
+    header {
+      border-bottom: 2px solid #202124;
+      margin-bottom: 28px;
+      padding-bottom: 18px;
+    }
+
+    h1 {
+      font-size: 30px;
+      margin: 0 0 6px;
+    }
+
+    h2 {
+      border-bottom: 1px solid #dadce0;
+      font-size: 21px;
+      margin-top: 30px;
+      padding-bottom: 5px;
+    }
+
+    h3 {
+      font-size: 17px;
+      margin-bottom: 5px;
+    }
+
+    p, li {
+      font-size: 15px;
+    }
+
+    code {
+      background: #f1f3f4;
+      border-radius: 3px;
+      padding: 1px 4px;
+    }
+
+    pre {
+      background: #f1f3f4;
+      border-left: 4px solid #5f6368;
+      overflow-x: auto;
+      padding: 12px;
+    }
+
+    table {
+      border-collapse: collapse;
+      margin: 16px 0;
+      width: 100%;
+    }
+
+    th, td {
+      border: 1px solid #bdc1c6;
+      padding: 8px 10px;
+      text-align: left;
+    }
+
+    th {
+      background: #f1f3f4;
+    }
+
+    .formula {
+      border: 1px solid #bdc1c6;
+      font-family: "Courier New", monospace;
+      margin: 14px 0;
+      padding: 12px;
+      text-align: center;
+    }
+
+    @media print {
+      body {
+        max-width: none;
+        padding: 0;
+      }
+
+      h2, h3 {
+        break-after: avoid;
+      }
+
+      table, pre, .formula {
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CS 121 Search Engine</h1>
+    <strong>Milestone 3 Report</strong><br>
+  </header>
+
+  <h2>System Overview</h2>
+  <p>
+    This project implements a search engine for the full ICS developer corpus
+    without using a text-indexing library. The system consists of two programs:
+    <code>indexer.py</code>, which builds a disk-based inverted index, and
+    <code>searcher.py</code>, which accepts console queries and returns ranked URLs.
+  </p>
+  <p>
+    Milestone 3 uses ranked retrieval rather than Boolean AND retrieval.
+    Documents containing any available query term are considered, and their
+    TF-IDF contributions are accumulated. Documents are not excluded merely
+    because they do not contain every query term.
+  </p>
+
+  <h2>Indexer Design</h2>
+
+  <h3>Document Processing</h3>
+  <ul>
+    <li>Reads each page's <code>url</code> and <code>content</code> from JSON.</li>
+    <li>Removes URL fragments before storing URLs.</li>
+    <li>Uses BeautifulSoup to handle normal and broken HTML.</li>
+    <li>Excludes script, style, and noscript content.</li>
+    <li>Uses a lighter extraction path for plain text and unusually large HTML files.</li>
+  </ul>
+
+  <h3>Tokens and Important Words</h3>
+  <p>
+    Tokens are all alphanumeric sequences matched by
+    <code>[A-Za-z0-9]+</code>. They are lowercased and Porter stemmed.
+    Stop words and numeric tokens are retained.
+  </p>
+  <p>
+    Text in <code>title</code>, <code>h1</code>, <code>h2</code>,
+    <code>h3</code>, <code>b</code>, and <code>strong</code> tags is counted
+    separately as important text. Each posting stores the document ID, normal
+    term frequency, and important-term frequency.
+  </p>
+
+  <h3>Partial Indexes</h3>
+  <p>
+    The indexer flushes its in-memory inverted index to a sorted partial index
+    every 5,000 documents. This exceeds the requirement to offload at least
+    three times. A k-way heap merge combines the partial indexes into
+    <code>index.txt</code>. During the merge, the indexer also builds
+    <code>index_seek.json</code>, which maps each token to its byte offset.
+  </p>
+
+  <h2>Search and Ranking</h2>
+  <p>
+    The searcher loads the seek table and URL map, but it does not load the
+    complete inverted index into memory. It seeks directly to each query term's
+    postings in <code>index.txt</code>.
+  </p>
+  <p>
+    Candidate documents are the union of documents containing any query term.
+    TF-IDF contributions are accumulated across all matching terms:
+  </p>
+
+  <div class="formula">
+    score(t, d) = (1 + log(tf + 5 × important_tf)) ×
+    (log((N + 1) / (df + 1)) + 1)
+  </div>
+
+  <p>Additional ranking components include:</p>
+  <ul>
+    <li>A coverage multiplier that favors documents matching more query terms.</li>
+    <li>Bonuses when query terms appear in the URL.</li>
+    <li>Penalties for raw data files and dataset paths.</li>
+    <li>URL normalization to remove equivalent results such as <code>/</code> and <code>/index.html</code>.</li>
+  </ul>
+
+  <h2>Operational Requirements</h2>
+  <ul>
+    <li>The inverted index is stored in filesystem files rather than a database.</li>
+    <li>The indexer repeatedly offloads partial indexes and merges them.</li>
+    <li>The searcher reads postings from disk using byte offsets.</li>
+    <li>The console interface returns ranked pages identified by URL.</li>
+    <li>No Lucene, PyLucene, ElasticSearch, or similar indexing library is used.</li>
+  </ul>
+
+  <h2>Analytics and Evaluation</h2>
+  <table>
+    <thead>
+      <tr><th>Metric</th><th>Result</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Indexed documents</td><td>55,393</td></tr>
+      <tr><td>Unique tokens</td><td>388,597</td></tr>
+      <tr><td>Index size</td><td>About 91 MB</td></tr>
+      <tr><td>Evaluation queries</td><td>20</td></tr>
+      <tr><td>Average response time</td><td>118.4 ms</td></tr>
+      <tr><td>Maximum response time</td><td>230.2 ms</td></tr>
+      <tr><td>Queries under 300 ms</td><td>20 of 20</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    The timing test used the complete 55,393-document index after loading the
+    seek table and URL map. All 20 evaluation queries met the developer-track
+    300 ms target.
+  </p>
+
+  <h2>Running the System</h2>
+  <pre><code>python3 -m pip install -r requirements.txt
+python3 indexer.py developer.zip -o output
+python3 searcher.py --index-dir output</code></pre>
+</body>
+</html>
