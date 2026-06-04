@@ -1,0 +1,219 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.8in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\setlist{nosep,leftmargin=1.4em}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\textbf{CS 121 Search Engine}\\Milestone 3 Report}
+\author{Kevin Guo}
+\date{June 3, 2026}
+
+\begin{document}
+\maketitle
+
+\section{System Overview}
+
+This project implements a search engine for the full ICS developer corpus without
+using a text-indexing library. It consists of two separate Python programs:
+
+\begin{itemize}
+  \item \code{indexer.py} parses the crawled JSON documents and builds a
+  disk-based inverted index.
+  \item \code{searcher.py} accepts console queries, retrieves postings from disk,
+  calculates TF-IDF-based scores, and returns ranked URLs.
+\end{itemize}
+
+The Milestone 3 retrieval component uses ranked retrieval rather than Boolean
+AND retrieval. A document containing any available query term can receive a
+score. Documents matching multiple query terms accumulate more TF-IDF score and
+receive an additional coverage benefit, but a document is not excluded merely
+because it is missing one query term.
+
+\section{Indexer Design}
+
+\subsection{Document Processing}
+
+Each corpus document is read from JSON using its \code{url} and \code{content}
+fields. URL fragments are removed before the URL is stored. HTML is parsed with
+BeautifulSoup, and script, style, and noscript content is excluded. Plain-text
+documents and unusually large HTML documents use a lighter extraction path to
+avoid pathological parsing time while still indexing their textual content.
+
+Tokens are all alphanumeric sequences matched by
+\code{[A-Za-z0-9]+}. Tokens are lowercased and Porter stemmed. Stop words and
+numeric tokens are retained to follow the no-stopping and all-alphanumeric-token
+requirements.
+
+\subsection{Important Words}
+
+Text appearing in \code{title}, \code{h1}, \code{h2}, \code{h3}, \code{b}, and
+\code{strong} tags is counted separately. Each posting stores:
+
+\begin{center}
+\code{(document ID, term frequency, important-term frequency)}
+\end{center}
+
+The searcher applies an important-word multiplier during scoring so occurrences
+in these tags contribute more strongly than ordinary body text.
+
+\subsection{Partial Indexes and Merge}
+
+The in-memory inverted index is flushed to a sorted partial index every 5,000
+documents. On the full corpus this produces more than the required three
+offloads. After indexing, a k-way heap merge combines the partial indexes into
+one sorted \code{index.txt} file.
+
+During the merge, the indexer records the byte offset of each token in
+\code{index\_seek.json}. It also writes \code{doc\_map.json}, which maps numeric
+document IDs to URLs, and \code{analytics.json}, which summarizes the index.
+
+\section{Search and Ranking}
+
+\subsection{Disk-Based Retrieval}
+
+The searcher loads the compact seek table and document-to-URL map, but it does
+not load the full inverted index into memory. For each stemmed query term, it
+uses the term's byte offset to seek directly to the corresponding postings line
+in \code{index.txt}.
+
+\subsection{TF-IDF Ranked Retrieval}
+
+Candidate documents are the union of the retrieved postings lists. For each
+query term $t$ and document $d$, the base contribution is:
+
+\[
+  \operatorname{score}(t,d) =
+  \left(1 + \log(tf_{t,d} + 5 \cdot important_{t,d})\right)
+  \left(\log\left(\frac{N+1}{df_t+1}\right)+1\right)
+\]
+
+when the effective term frequency is positive. Here, $N$ is the number of
+indexed documents and $df_t$ is the document frequency of the term. Scores are
+summed across all query terms found in the document.
+
+This is not Boolean AND retrieval: a document matching one query term can be
+ranked alongside a document matching all terms. Matching more query terms
+normally increases the accumulated TF-IDF score. A small coverage multiplier
+also favors documents that match a larger fraction of the query.
+
+\subsection{Additional Ranking Components}
+
+\begin{itemize}
+  \item Query terms found in a URL receive a bonus.
+  \item Raw text/data URLs and dataset paths receive mild penalties because
+  repeated terms in large data files can otherwise dominate results.
+  \item Equivalent URL forms such as \code{/}, \code{/index}, and
+  \code{/index.html} are collapsed in the final result list.
+  \item URL-based reranking is limited to a preliminary high-scoring window to
+  control query time.
+\end{itemize}
+
+\section{Index Analytics}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Indexed documents & 55,393 \\
+Unique tokens & 388,597 \\
+Inverted-index size & 93,216.91 KB (approximately 91.0 MB) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Evaluation}
+
+The final searcher was evaluated on 20 queries after the seek table and document
+map were loaded. Every query completed within the developer-track 300 ms target.
+
+\begin{center}
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.48\linewidth}r}
+\toprule
+Query & Time (ms) \\
+\midrule
+\endfirsthead
+\toprule
+Query & Time (ms) \\
+\midrule
+\endhead
+\code{cristina lopes} & 7.7 \\
+\code{machine learning} & 87.8 \\
+\code{ACM} & 92.7 \\
+\code{student affairs} & 105.3 \\
+\code{artificial intelligence} & 67.2 \\
+\code{data mining} & 88.0 \\
+\code{donald bren school} & 72.6 \\
+\code{secure systems} & 107.8 \\
+\code{software engineering masters} & 131.1 \\
+\code{informatics graduate program} & 93.1 \\
+\code{master of software engineering} & 185.1 \\
+\code{database systems} & 115.1 \\
+\code{computer vision} & 77.2 \\
+\code{mondego lab} & 78.6 \\
+\code{undergraduate admissions} & 80.6 \\
+\code{ics faculty} & 102.0 \\
+\code{course catalogue} & 102.1 \\
+\code{networked systems} & 78.1 \\
+\code{game design} & 87.7 \\
+\code{uci calendar} & 128.0 \\
+\midrule
+Average & 94.4 \\
+Maximum & 185.1 \\
+Queries under 300 ms & 20 of 20 \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+The move from Boolean AND to union-based TF-IDF retrieval improved recall:
+pages may now be returned even when they contain only part of a multi-term
+query. The tested results were generally relevant, and URL-aware ranking helped
+surface program, calendar, faculty, and course pages. Some broad queries still
+rank publication pages or dataset pages above the most authoritative page,
+showing that TF-IDF alone does not fully model page quality.
+
+\section{Operational Requirements}
+
+\begin{itemize}
+  \item The index is stored in filesystem files rather than a database.
+  \item The indexer offloads its in-memory index to disk repeatedly and merges
+  the partial indexes at the end.
+  \item The searcher performs direct disk seeks and does not load all postings
+  into memory.
+  \item The search interface is an interactive console prompt and identifies
+  results by URL.
+  \item The measured response time remained below 300 ms for all 20 evaluation
+  queries after startup.
+\end{itemize}
+
+\section{Limitations and Future Improvements}
+
+\begin{itemize}
+  \item Ranking quality could be improved with document-length normalization
+  such as cosine normalization or BM25.
+  \item Content-based exact and near-duplicate detection would reduce duplicate
+  pages beyond the current URL normalization.
+  \item Positional indexes and phrase matching would improve multi-word queries.
+  \item PageRank, anchor text, or domain-quality signals could help authoritative
+  pages outrank repeated-term publication and dataset pages.
+\end{itemize}
+
+\section{Running the System}
+
+\begin{verbatim}
+python3 indexer.py developer.zip -o output
+python3 searcher.py --index-dir output
+python3 searcher.py --index-dir output --query "machine learning" --top 5
+\end{verbatim}
+
+\end{document}
