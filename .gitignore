@@ -2,5 +2,12 @@ __pycache__/
 *.py[cod]
 *.zip
 index.json
+index.txt
+index_seek.json
 doc_map.json
 analytics.json
+output/
+partials/
+M3_Report.aux
+M3_Report.log
+M3_Report.out
