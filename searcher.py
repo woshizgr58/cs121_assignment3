@@ -1,4 +1,5 @@
 import argparse
+import heapq
 import json
 import math
 import re
@@ -19,19 +20,13 @@ URL_MATCH_BOOST = 4.0
 EXACT_URL_PHRASE_BOOST = 8.0
 RAW_FILE_PENALTY = 0.55
 DATASET_PATH_PENALTY = 0.75
-STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
-    "in", "into", "is", "it", "of", "on", "or", "the", "to", "with",
-}
 stemmer = PorterStemmer()
  
 
  
 def tokenize_query(query: str) -> list[str]:
-    raw_tokens = [tok.lower() for tok in TOKEN_RE.findall(query) if not tok.isdigit()]
-    content_tokens = [tok for tok in raw_tokens if tok not in STOPWORDS]
-    tokens_to_use = content_tokens if content_tokens else raw_tokens
-    stemmed = [stemmer.stem(tok) for tok in tokens_to_use]
+    raw_tokens = [tok.lower() for tok in TOKEN_RE.findall(query)]
+    stemmed = [stemmer.stem(tok) for tok in raw_tokens]
     return list(dict.fromkeys(stemmed))
 
 
@@ -112,47 +107,6 @@ class IndexReader:
  
  
  
-def intersect_sorted_ids(left: list[int], right: list[int]) -> list[int]:
-    result = []
-    i = j = 0
-    while i < len(left) and j < len(right):
-        if left[i] == right[j]:
-            result.append(left[i])
-            i += 1
-            j += 1
-        elif left[i] < right[j]:
-            i += 1
-        else:
-            j += 1
-    return result
-
-
-def choose_candidates(all_postings: list[list[tuple[int, int, int]]], top_k: int) -> set[int]:
-    sorted_postings = sorted(all_postings, key=len)
-    strict_ids = [posting[0] for posting in sorted_postings[0]]
-    for postings in sorted_postings[1:]:
-        strict_ids = intersect_sorted_ids(strict_ids, [posting[0] for posting in postings])
-        if not strict_ids:
-            break
-
-    if len(all_postings) <= 2 or len(strict_ids) >= top_k:
-        return set(strict_ids)
-
-    # Soft fallback: search engines should still return useful pages for long
-    # natural-language queries when one term is absent or too restrictive.
-    min_matches = max(1, math.ceil(len(all_postings) * 0.60))
-    if len(all_postings) <= 2:
-        min_matches = len(all_postings)
-
-    match_counts: dict[int, int] = {}
-    for postings in all_postings:
-        for doc_id, _, _ in postings:
-            match_counts[doc_id] = match_counts.get(doc_id, 0) + 1
-
-    soft_ids = {doc_id for doc_id, count in match_counts.items() if count >= min_matches}
-    return soft_ids or set(strict_ids)
-
-
 def search(query: str, reader: IndexReader, top_k: int = 5):
     tokens = tokenize_query(query)
     if not tokens:
@@ -168,30 +122,23 @@ def search(query: str, reader: IndexReader, top_k: int = 5):
         return []
 
     available_tokens = [token for token, _ in postings_by_token]
-    all_postings = [postings for _, postings in postings_by_token]
-    candidate_set = choose_candidates(all_postings, top_k)
-    if not candidate_set:
-        return []
-
-    scores: dict[int, float] = {doc_id: 0.0 for doc_id in candidate_set}
-    matched_terms: dict[int, int] = {doc_id: 0 for doc_id in candidate_set}
+    scores: dict[int, float] = {}
+    matched_terms: dict[int, int] = {}
 
     for token, postings in postings_by_token:
         df = len(postings)
         idf = math.log((reader.N + 1) / (df + 1)) + 1.0
         for doc_id, tf, imp in postings:
-            if doc_id not in candidate_set:
-                continue
-            matched_terms[doc_id] += 1
+            matched_terms[doc_id] = matched_terms.get(doc_id, 0) + 1
             effective_tf = tf + imp * IMPORTANT_BOOST
             tf_weight = (1 + math.log(effective_tf)) if effective_tf > 0 else 0.0
-            scores[doc_id] += tf_weight * idf
+            scores[doc_id] = scores.get(doc_id, 0.0) + tf_weight * idf
 
-    rerank_limit = max(1000, top_k * 200)
+    rerank_limit = max(250, top_k * 50)
     rerank_doc_ids = {
-        doc_id for doc_id, _ in sorted(
-            scores.items(), key=lambda x: x[1], reverse=True
-        )[:rerank_limit]
+        doc_id for doc_id, _ in heapq.nlargest(
+            rerank_limit, scores.items(), key=lambda x: x[1]
+        )
     }
 
     for doc_id in list(scores):
@@ -214,7 +161,7 @@ def search(query: str, reader: IndexReader, top_k: int = 5):
 
         scores[doc_id] *= url_quality_multiplier(url)
 
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    ranked = heapq.nlargest(max(top_k * 20, 100), scores.items(), key=lambda x: x[1])
     unique_results = []
     seen_urls = set()
     for doc_id, score in ranked:

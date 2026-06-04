@@ -17,7 +17,7 @@ This document lists the 20 queries used to evaluate the search engine for rankin
 
 ## Queries That Initially Performed Poorly
 
-11. `master of software engineering` - Stopword `of` over-constrained the query, and noisy course/data files could outrank the MSWE page.
+11. `master of software engineering` - Common terms and noisy course/data files could outrank the MSWE page.
 12. `database systems` - Large dataset text files sometimes outranked database group/course pages.
 13. `computer vision` - Generic homework/text pages could outrank actual computer vision pages.
 14. `mondego lab` - Results were indirect news/profile pages rather than lab/project pages.
@@ -30,7 +30,7 @@ This document lists the 20 queries used to evaluate the search engine for rankin
 
 ## General Changes Made
 
-- Query stopword filtering: common query words such as `of`, `the`, and `and` are ignored when there are other content words. The index still keeps stopwords; this only prevents query-time over-constraining.
+- Full query token use: query terms are stemmed and retained, including common words and numeric tokens, to match the no-stopping requirement.
 - Soft fallback for longer queries: strict AND is still used when enough results exist, but longer natural-language queries can fall back to majority-term matching when strict AND is too brittle.
 - URL-aware ranking: documents whose URL contains query terms receive a general bonus. This helps official pages such as faculty profiles, program pages, lab pages, and event pages surface when their URL clearly matches the query.
 - Raw-file and dataset penalties: `.txt`, `.bib`, `.csv`, `.log`, and dataset-path URLs receive a mild penalty so large text dumps do not dominate normal web-search queries.
@@ -46,4 +46,3 @@ python3 searcher.py --index-dir output --query "master of software engineering" 
 python3 searcher.py --index-dir output
 ```
 
-The interactive command is useful for the TA demo because the index seek table and doc map load once, then each query runs without restarting the program.

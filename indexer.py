@@ -7,7 +7,7 @@ import tempfile
 import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 from urllib.parse import urldefrag
  
 try:
@@ -22,8 +22,16 @@ except ImportError as error:
  
  
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+HTML_TAG_RE = re.compile(r"<[A-Za-z][^>]{0,200}>")
+SCRIPT_STYLE_RE = re.compile(r"<(script|style|noscript)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
+TAG_RE = re.compile(r"<[^>]+>")
+IMPORTANT_RE = re.compile(
+    r"<(title|h1|h2|h3|b|strong)\b[^>]*>(.*?)</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
 IMPORTANT_TAGS = ("title", "h1", "h2", "h3", "b", "strong")
-FLUSH_EVERY = 10_000
+FLUSH_EVERY = 5_000
+LARGE_HTML_PARSE_LIMIT = 100_000
  
 stemmer = PorterStemmer()
  
@@ -39,10 +47,7 @@ def walk_json_files(dataset_path: Path) -> Iterable[Path]:
 def tokenize(text: str) -> list[str]:
     tokens = []
     for tok in TOKEN_RE.findall(text or ""):
-        tok = tok.lower()
-        if tok.isdigit():
-            continue
-        tokens.append(stemmer.stem(tok))
+        tokens.append(stemmer.stem(tok.lower()))
     return tokens
  
  
@@ -50,6 +55,18 @@ def extract_important_text(soup: BeautifulSoup) -> str:
     chunks = []
     for tag in soup.find_all(IMPORTANT_TAGS):
         chunks.append(tag.get_text(" ", strip=True))
+    return " ".join(chunks)
+
+
+def strip_html_fast(content: str) -> str:
+    without_scripts = SCRIPT_STYLE_RE.sub(" ", content)
+    return TAG_RE.sub(" ", without_scripts)
+
+
+def extract_important_text_fast(content: str) -> str:
+    chunks = []
+    for match in IMPORTANT_RE.finditer(content):
+        chunks.append(TAG_RE.sub(" ", match.group(2)))
     return " ".join(chunks)
  
  
@@ -66,6 +83,18 @@ def process_document(json_path: Path):
         content = ""
  
     clean_url, _ = urldefrag(url)
+    if not HTML_TAG_RE.search(content[:4096]):
+        return clean_url, Counter(tokenize(content)), Counter()
+
+    if len(content) > LARGE_HTML_PARSE_LIMIT:
+        visible_text = strip_html_fast(content)
+        important_text = extract_important_text_fast(content)
+        return (
+            clean_url,
+            Counter(tokenize(visible_text)),
+            Counter(tokenize(important_text)),
+        )
+
     soup = BeautifulSoup(content, "html.parser")
  
     for tag in soup(["script", "style", "noscript"]):
@@ -168,6 +197,8 @@ def merge_partials(partial_paths: list[Path], output_index: Path, output_seek: P
 def build_index(dataset_path: Path, output_dir: Path):
     partial_dir = output_dir / "partials"
     partial_dir.mkdir(parents=True, exist_ok=True)
+    for stale_partial in partial_dir.glob("partial_*.txt"):
+        stale_partial.unlink()
  
     doc_map = {}
     indexed_documents = 0
@@ -202,23 +233,23 @@ def build_index(dataset_path: Path, output_dir: Path):
             partial_paths.append(path)
             buffer.clear()
             print(f"  Flushed partial index #{flush_count} at {indexed_documents} docs "
-                  f"({files_seen} files scanned)...")
+                  f"({files_seen} files scanned)...", flush=True)
  
         if indexed_documents % 5000 == 0:
-            print(f"  Processed {indexed_documents} documents...")
+            print(f"  Processed {indexed_documents} documents...", flush=True)
  
     if buffer:
         flush_count += 1
         path = flush_partial(buffer, partial_dir, flush_count)
         partial_paths.append(path)
         buffer.clear()
-        print(f"  Flushed final partial index #{flush_count}.")
+        print(f"  Flushed final partial index #{flush_count}.", flush=True)
  
-    print(f"\nMerging {len(partial_paths)} partial indexes...")
+    print(f"\nMerging {len(partial_paths)} partial indexes...", flush=True)
     index_path = output_dir / "index.txt"
     seek_path = output_dir / "index_seek.json"
     seek_table = merge_partials(partial_paths, index_path, seek_path)
-    print("Merge complete.")
+    print("Merge complete.", flush=True)
  
     for p in partial_paths:
         p.unlink()
@@ -238,19 +269,19 @@ def build_index(dataset_path: Path, output_dir: Path):
     with analytics_path.open("w", encoding="utf-8") as f:
         json.dump(analytics, f, indent=2, sort_keys=True)
  
-    print("\nIndexer analytics")
-    print("-----------------")
-    print(f"Indexed documents : {analytics['number_of_indexed_documents']}")
-    print(f"Unique tokens     : {analytics['number_of_unique_tokens']}")
-    print(f"Index size on disk: {analytics['total_index_size_kb']:.2f} KB")
-    print(f"Partial flushes   : {flush_count}")
+    print("\nIndexer analytics", flush=True)
+    print("-----------------", flush=True)
+    print(f"Indexed documents : {analytics['number_of_indexed_documents']}", flush=True)
+    print(f"Unique tokens     : {analytics['number_of_unique_tokens']}", flush=True)
+    print(f"Index size on disk: {analytics['total_index_size_kb']:.2f} KB", flush=True)
+    print(f"Partial flushes   : {flush_count}", flush=True)
  
  
  
 def resolve_dataset_path(input_path: Path):
     if not input_path.is_file() or input_path.suffix.lower() != ".zip":
         return None, None
-    temp_dir = tempfile.TemporaryDirectory()
+    temp_dir = tempfile.TemporaryDirectory(prefix="index_extract_", dir=input_path.parent)
     with zipfile.ZipFile(input_path, "r") as zf:
         zf.extractall(temp_dir.name)
     extracted = Path(temp_dir.name)
@@ -285,7 +316,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
  
     try:
-        print(f"Building index from {dataset_path}...")
+        print(f"Building index from {dataset_path}...", flush=True)
         build_index(dataset_path, args.output_dir)
     finally:
         if temp_dir:
